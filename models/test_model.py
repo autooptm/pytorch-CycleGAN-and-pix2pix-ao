@@ -1,5 +1,10 @@
+import os
+import torch
 from .base_model import BaseModel
 from . import networks
+
+_AO_OPT_6 = os.environ.get("AUTOOPTM_OPT_2", "1") not in ("0", "false", "False", "")
+_AO_OPT_7 = os.environ.get("AUTOOPTM_OPT_3", "1") not in ("0", "false", "False", "")
 
 
 class TestModel(BaseModel):
@@ -57,12 +62,41 @@ class TestModel(BaseModel):
 
         We need to use 'single_dataset' dataset mode. It only load images from one domain.
         """
-        self.real = input["A"].to(self.device)
+        if self._ao_prepare(input["A"]):
+            self.real = self._ao_opt_8
+        else:
+            self.real = input["A"].to(self.device)
         self.image_paths = input["A_paths"]
+
+    def _ao_prepare(self, a):
+        if not _AO_OPT_6 or not torch.cuda.is_available() or a.dim() != 4 or a.shape[0] != 1:
+            return False
+        if getattr(self, "_ao_opt_9", None) is None or self._ao_opt_8.shape != a.shape:
+            self._ao_opt_8 = torch.zeros_like(a, device=self.device)
+            side = torch.cuda.Stream()
+            side.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(side), torch.no_grad():
+                for _ in range(3):
+                    self._ao_opt_10 = self._ao_forward(self._ao_opt_8)
+            torch.cuda.current_stream().wait_stream(side)
+            torch.cuda.synchronize()
+            self._ao_opt_9 = torch.cuda.CUDAGraph()
+            with torch.no_grad(), torch.cuda.graph(self._ao_opt_9):
+                self._ao_opt_10 = self._ao_forward(self._ao_opt_8)
+        self._ao_opt_8.copy_(a)
+        return True
+
+    def _ao_forward(self, x):
+        with torch.autocast("cuda", dtype=torch.float16, enabled=_AO_OPT_7):
+            return self.netG(x)
 
     def forward(self):
         """Run forward pass."""
-        self.fake = self.netG(self.real)  # G(real)
+        if getattr(self, "_ao_opt_9", None) is not None:
+            self._ao_opt_9.replay()
+            self.fake = self._ao_opt_10  # G(real)
+        else:
+            self.fake = self._ao_forward(self.real)  # G(real)
 
     def optimize_parameters(self):
         """No optimization for test model."""

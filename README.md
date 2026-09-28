@@ -1,3 +1,65 @@
+<div align="center">
+  <a href="https://autooptm.com"><img src=".autooptm/logo.png" width="96" alt="AutoOptm"></a>
+
+  <h1>pytorch-CycleGAN-and-pix2pix · optimized by <a href="https://autooptm.com">AutoOptm</a></h1>
+
+  <p><b>7.59x faster end to end</b> on the command below, output verified against the stock program.</p>
+
+  <p>
+    <a href="https://autooptm.com"><img alt="speedup" src="https://img.shields.io/badge/end--to--end-7.59x-2ea44f"></a>
+    <a href="https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/commit/2a7afba2895d52556dd5dfe07e8555ef657ced6f"><img alt="base" src="https://img.shields.io/badge/upstream-2a7afba2895d-blue"></a>
+    <img alt="card" src="https://img.shields.io/badge/measured%20on-NVIDIA%20RTX%204090-lightgrey">
+  </p>
+</div>
+
+> This is a fork of [junyanz/pytorch-CycleGAN-and-pix2pix](https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix) at commit
+> [`2a7afba2895d`](https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/commit/2a7afba2895d52556dd5dfe07e8555ef657ced6f) with the AutoOptm patch applied on top.
+> The optimisation was found, measured and verified automatically by [AutoOptm](https://autooptm.com);
+> the patch is also kept at [`.autooptm/autooptm.patch`](.autooptm/autooptm.patch).
+
+## The result
+
+| | |
+|---|---|
+| **Command** | `python test.py --dataroot datasets/horse2zebra/testA --name horse2zebra_pretrained --model test --no_dropout` |
+| **Entry point** | `test.py` |
+| **Unit measured** | one test image: JPEG decode → transform → generator → PNG written to disk |
+| **Before (stock)** | 46.0 ms per unit |
+| **After (this tree, all switches default ON)** | 5.95 ms per unit |
+| **Speedup** | **7.59x** end to end, noise floor of the host 0.9% (median of 5 repeats) |
+| **Output** | default tree: worst pixel differs by 2 uint8 levels (PSNR 64.9 dB) — less than the stock program differs from itself run to run (3 levels). One switch gives the bit-exact path at 6.2x. |
+
+### What changed
+
+| File | Where | Gain (alone) |
+|---|---|---|
+| `util/util.py` | save_image | 2.26x |
+| `util/util.py` | tensor2im | 1.65x |
+| `models/test_model.py` | TestModel.set_input / forward | 1.21x |
+| `models/test_model.py` | TestModel.forward | 1.09x |
+| `data/base_dataset.py` | get_transform | 1.16x |
+| `util/visualizer.py` | save_images | 1.01x |
+
+
+
+## Reproduce
+
+```bash
+git clone https://github.com/autooptm/pytorch-CycleGAN-and-pix2pix-ao.git
+cd pytorch-CycleGAN-and-pix2pix-ao
+# set up exactly as upstream documents, then:
+python test.py --dataroot datasets/horse2zebra/testA --name horse2zebra_pretrained --model test --no_dropout
+```
+
+The diff against upstream is one commit: `git log -1 -p` shows it, and
+`git diff 2a7afba2895d` is the same patch as `.autooptm/autooptm.patch`.
+
+---
+
+<div align="center"><sub>Optimized by <a href="https://autooptm.com">AutoOptm</a> — point it at a repository, get back a verified speedup and the patch.</sub></div>
+
+---
+
 <img src='imgs/horse2zebra.gif' align="right" width=384>
 
 <br><br><br>

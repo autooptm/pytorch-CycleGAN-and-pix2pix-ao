@@ -6,7 +6,22 @@ from . import util, html
 from pathlib import Path
 import wandb
 import os
+import atexit
+from concurrent.futures import ThreadPoolExecutor
 import torch.distributed as dist
+
+_ao_opt_15 = (ThreadPoolExecutor(max_workers=2, thread_name_prefix="autooptm-write")
+            if (util.AUTOOPTM_OPT_1 and util._ao_on("AUTOOPTM_OPT_4")) else None)
+_ao_opt_16 = []
+
+
+def _ao_opt_14():
+    while _ao_opt_16:
+        _ao_opt_16.pop(0).result()
+
+
+if _ao_opt_15 is not None:
+    atexit.register(_ao_opt_14)
 
 
 def save_images(webpage, visuals, image_path, aspect_ratio=1.0, width=256):
@@ -30,7 +45,11 @@ def save_images(webpage, visuals, image_path, aspect_ratio=1.0, width=256):
         im = util.tensor2im(im_data)
         image_name = f"{name}_{label}.png"
         save_path = image_dir / image_name
-        util.save_image(im, save_path, aspect_ratio=aspect_ratio)
+        if _ao_opt_15 is not None:
+            _ao_opt_14()
+            _ao_opt_16.append(_ao_opt_15.submit(util.save_image, im, save_path, aspect_ratio))
+        else:
+            util.save_image(im, save_path, aspect_ratio=aspect_ratio)
         ims.append(image_name)
         txts.append(label)
         links.append(image_name)

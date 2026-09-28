@@ -1,0 +1,221 @@
+diff --git a/data/base_dataset.py b/data/base_dataset.py
+index 016bd89..9f8d0c8 100755
+--- a/data/base_dataset.py
++++ b/data/base_dataset.py
+@@ -9,6 +9,9 @@ import torch.utils.data as data
+ from PIL import Image
+ import torchvision.transforms as transforms
+ from abc import ABC, abstractmethod
++import os
++
++_AO_OPT_5 = os.environ.get("AUTOOPTM_OPT_1", "1") not in ("0", "false", "False", "")
+ 
+ 
+ class BaseDataset(data.Dataset, ABC):
+@@ -85,13 +88,29 @@ def get_transform(opt, params=None, grayscale=False, method=transforms.Interpola
+         transform_list.append(transforms.Grayscale(1))
+     if "resize" in opt.preprocess:
+         osize = [opt.load_size, opt.load_size]
+-        transform_list.append(transforms.Resize(osize, method))
++        _ao_skip = _AO_OPT_5 and params is None and opt.load_size == opt.crop_size
++
++        def _ao_resize(img, _osize=osize, _method=method, _skip=_ao_skip):
++            if _skip and img.size == (_osize[1], _osize[0]):
++                return img
++            return transforms.functional.resize(img, _osize, _method)
++
++        transform_list.append(transforms.Lambda(_ao_resize))
+     elif "scale_width" in opt.preprocess:
+         transform_list.append(transforms.Lambda(lambda img: __scale_width(img, opt.load_size, opt.crop_size, method)))
+ 
+     if "crop" in opt.preprocess:
+         if params is None:
+-            transform_list.append(transforms.RandomCrop(opt.crop_size))
++            _ao_crop_size = opt.crop_size
++
++            def _ao_random_crop(img, _size=_ao_crop_size, _skip=_ao_skip if "resize" in opt.preprocess else False):
++                # RandomCrop at exactly the image size is the identity (its own
++                # get_params early-returns the full box); calling it still copies.
++                if _skip and img.size == (_size, _size):
++                    return img
++                return transforms.RandomCrop(_size)(img)
++
++            transform_list.append(transforms.Lambda(_ao_random_crop))
+         else:
+             transform_list.append(transforms.Lambda(lambda img: __crop(img, params["crop_pos"], opt.crop_size)))
+ 
+diff --git a/models/test_model.py b/models/test_model.py
+index fd520ef..ecb4ae7 100644
+--- a/models/test_model.py
++++ b/models/test_model.py
+@@ -1,6 +1,11 @@
++import os
++import torch
+ from .base_model import BaseModel
+ from . import networks
+ 
++_AO_OPT_6 = os.environ.get("AUTOOPTM_OPT_2", "1") not in ("0", "false", "False", "")
++_AO_OPT_7 = os.environ.get("AUTOOPTM_OPT_3", "1") not in ("0", "false", "False", "")
++
+ 
+ class TestModel(BaseModel):
+     """This TesteModel can be used to generate CycleGAN results for only one direction.
+@@ -57,12 +62,41 @@ class TestModel(BaseModel):
+ 
+         We need to use 'single_dataset' dataset mode. It only load images from one domain.
+         """
+-        self.real = input["A"].to(self.device)
++        if self._ao_prepare(input["A"]):
++            self.real = self._ao_opt_8
++        else:
++            self.real = input["A"].to(self.device)
+         self.image_paths = input["A_paths"]
+ 
++    def _ao_prepare(self, a):
++        if not _AO_OPT_6 or not torch.cuda.is_available() or a.dim() != 4 or a.shape[0] != 1:
++            return False
++        if getattr(self, "_ao_opt_9", None) is None or self._ao_opt_8.shape != a.shape:
++            self._ao_opt_8 = torch.zeros_like(a, device=self.device)
++            side = torch.cuda.Stream()
++            side.wait_stream(torch.cuda.current_stream())
++            with torch.cuda.stream(side), torch.no_grad():
++                for _ in range(3):
++                    self._ao_opt_10 = self._ao_forward(self._ao_opt_8)
++            torch.cuda.current_stream().wait_stream(side)
++            torch.cuda.synchronize()
++            self._ao_opt_9 = torch.cuda.CUDAGraph()
++            with torch.no_grad(), torch.cuda.graph(self._ao_opt_9):
++                self._ao_opt_10 = self._ao_forward(self._ao_opt_8)
++        self._ao_opt_8.copy_(a)
++        return True
++
++    def _ao_forward(self, x):
++        with torch.autocast("cuda", dtype=torch.float16, enabled=_AO_OPT_7):
++            return self.netG(x)
++
+     def forward(self):
+         """Run forward pass."""
+-        self.fake = self.netG(self.real)  # G(real)
++        if getattr(self, "_ao_opt_9", None) is not None:
++            self._ao_opt_9.replay()
++            self.fake = self._ao_opt_10  # G(real)
++        else:
++            self.fake = self._ao_forward(self.real)  # G(real)
+ 
+     def optimize_parameters(self):
+         """No optimization for test model."""
+diff --git a/util/util.py b/util/util.py
+index f08c67b..78c4801 100644
+--- a/util/util.py
++++ b/util/util.py
+@@ -9,6 +9,48 @@ import torch.distributed as dist
+ import os
+ 
+ 
++def _ao_on(name, default="1"):
++    return os.environ.get(name, default) not in ("0", "false", "False", "")
++
++
++AUTOOPTM_OPT_1 = _ao_on("AUTOOPTM_OPT_1")
++
++_ao_opt_13 = {}
++
++
++def _ao_opt_11(image_tensor):
++    x = image_tensor[0].float().permute(1, 2, 0).contiguous()
++    x = ((x + 1) / 2.0 * 255.0).to(torch.uint8)
++    key = tuple(x.shape)
++    buf = _ao_opt_13.get(key)
++    if buf is None:
++        buf = torch.empty(key, dtype=torch.uint8, device="cpu", pin_memory=True)
++        _ao_opt_13[key] = buf
++    buf.copy_(x, non_blocking=True)
++    torch.cuda.synchronize()
++    return buf.numpy().copy()
++
++
++def _ao_opt_12(image_numpy):
++    import struct
++    import zlib
++
++    h, w, _ = image_numpy.shape
++    rows = np.empty((h, w * 3 + 1), dtype=np.uint8)
++    rows[:, 0] = 0                                   # filter type 0 (None)
++    rows[:, 1:] = image_numpy.reshape(h, w * 3)
++    co = zlib.compressobj(0)
++    idat = co.compress(rows.tobytes()) + co.flush()
++
++    def _chunk(tag, data):
++        return (struct.pack(">I", len(data)) + tag + data
++                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
++
++    return (b"\x89PNG\r\n\x1a\n"
++            + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
++            + _chunk(b"IDAT", idat) + _chunk(b"IEND", b""))
++
++
+ def tensor2im(input_image, imtype=np.uint8):
+     """ "Converts a Tensor array into a numpy image array.
+ 
+@@ -21,6 +63,8 @@ def tensor2im(input_image, imtype=np.uint8):
+             image_tensor = input_image.data
+         else:
+             return input_image
++        if AUTOOPTM_OPT_1 and image_tensor.is_cuda and image_tensor.dim() == 4 and image_tensor.shape[1] == 3 and imtype is np.uint8:
++            return _ao_opt_11(image_tensor)
+         image_numpy = image_tensor[0].cpu().float().numpy()  # convert it into a numpy array
+         if image_numpy.shape[0] == 1:  # grayscale to RGB
+             image_numpy = np.tile(image_numpy, (3, 1, 1))
+@@ -83,6 +127,11 @@ def save_image(image_numpy, image_path, aspect_ratio=1.0):
+         image_path (str)          -- the path of the image
+     """
+ 
++    if AUTOOPTM_OPT_1 and aspect_ratio == 1.0 and image_numpy.ndim == 3 and image_numpy.shape[2] == 3 and str(image_path).endswith(".png"):
++        with open(image_path, "wb") as fh:
++            fh.write(_ao_opt_12(np.ascontiguousarray(image_numpy)))
++        return
++
+     image_pil = Image.fromarray(image_numpy)
+     h, w, _ = image_numpy.shape
+ 
+diff --git a/util/visualizer.py b/util/visualizer.py
+index a3573fa..87aeab8 100644
+--- a/util/visualizer.py
++++ b/util/visualizer.py
+@@ -6,8 +6,23 @@ from . import util, html
+ from pathlib import Path
+ import wandb
+ import os
++import atexit
++from concurrent.futures import ThreadPoolExecutor
+ import torch.distributed as dist
+ 
++_ao_opt_15 = (ThreadPoolExecutor(max_workers=2, thread_name_prefix="autooptm-write")
++            if (util.AUTOOPTM_OPT_1 and util._ao_on("AUTOOPTM_OPT_4")) else None)
++_ao_opt_16 = []
++
++
++def _ao_opt_14():
++    while _ao_opt_16:
++        _ao_opt_16.pop(0).result()
++
++
++if _ao_opt_15 is not None:
++    atexit.register(_ao_opt_14)
++
+ 
+ def save_images(webpage, visuals, image_path, aspect_ratio=1.0, width=256):
+     """Save images to the disk.
+@@ -30,7 +45,11 @@ def save_images(webpage, visuals, image_path, aspect_ratio=1.0, width=256):
+         im = util.tensor2im(im_data)
+         image_name = f"{name}_{label}.png"
+         save_path = image_dir / image_name
+-        util.save_image(im, save_path, aspect_ratio=aspect_ratio)
++        if _ao_opt_15 is not None:
++            _ao_opt_14()
++            _ao_opt_16.append(_ao_opt_15.submit(util.save_image, im, save_path, aspect_ratio))
++        else:
++            util.save_image(im, save_path, aspect_ratio=aspect_ratio)
+         ims.append(image_name)
+         txts.append(label)
+         links.append(image_name)

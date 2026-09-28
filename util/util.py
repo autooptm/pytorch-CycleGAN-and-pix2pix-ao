@@ -9,6 +9,48 @@ import torch.distributed as dist
 import os
 
 
+def _ao_on(name, default="1"):
+    return os.environ.get(name, default) not in ("0", "false", "False", "")
+
+
+AUTOOPTM_OPT_1 = _ao_on("AUTOOPTM_OPT_1")
+
+_ao_opt_13 = {}
+
+
+def _ao_opt_11(image_tensor):
+    x = image_tensor[0].float().permute(1, 2, 0).contiguous()
+    x = ((x + 1) / 2.0 * 255.0).to(torch.uint8)
+    key = tuple(x.shape)
+    buf = _ao_opt_13.get(key)
+    if buf is None:
+        buf = torch.empty(key, dtype=torch.uint8, device="cpu", pin_memory=True)
+        _ao_opt_13[key] = buf
+    buf.copy_(x, non_blocking=True)
+    torch.cuda.synchronize()
+    return buf.numpy().copy()
+
+
+def _ao_opt_12(image_numpy):
+    import struct
+    import zlib
+
+    h, w, _ = image_numpy.shape
+    rows = np.empty((h, w * 3 + 1), dtype=np.uint8)
+    rows[:, 0] = 0                                   # filter type 0 (None)
+    rows[:, 1:] = image_numpy.reshape(h, w * 3)
+    co = zlib.compressobj(0)
+    idat = co.compress(rows.tobytes()) + co.flush()
+
+    def _chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + _chunk(b"IDAT", idat) + _chunk(b"IEND", b""))
+
+
 def tensor2im(input_image, imtype=np.uint8):
     """ "Converts a Tensor array into a numpy image array.
 
@@ -21,6 +63,8 @@ def tensor2im(input_image, imtype=np.uint8):
             image_tensor = input_image.data
         else:
             return input_image
+        if AUTOOPTM_OPT_1 and image_tensor.is_cuda and image_tensor.dim() == 4 and image_tensor.shape[1] == 3 and imtype is np.uint8:
+            return _ao_opt_11(image_tensor)
         image_numpy = image_tensor[0].cpu().float().numpy()  # convert it into a numpy array
         if image_numpy.shape[0] == 1:  # grayscale to RGB
             image_numpy = np.tile(image_numpy, (3, 1, 1))
@@ -82,6 +126,11 @@ def save_image(image_numpy, image_path, aspect_ratio=1.0):
         image_numpy (numpy array) -- input numpy array
         image_path (str)          -- the path of the image
     """
+
+    if AUTOOPTM_OPT_1 and aspect_ratio == 1.0 and image_numpy.ndim == 3 and image_numpy.shape[2] == 3 and str(image_path).endswith(".png"):
+        with open(image_path, "wb") as fh:
+            fh.write(_ao_opt_12(np.ascontiguousarray(image_numpy)))
+        return
 
     image_pil = Image.fromarray(image_numpy)
     h, w, _ = image_numpy.shape

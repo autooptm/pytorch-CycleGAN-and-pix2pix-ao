@@ -9,6 +9,9 @@ import torch.utils.data as data
 from PIL import Image
 import torchvision.transforms as transforms
 from abc import ABC, abstractmethod
+import os
+
+_AO_OPT_5 = os.environ.get("AUTOOPTM_OPT_1", "1") not in ("0", "false", "False", "")
 
 
 class BaseDataset(data.Dataset, ABC):
@@ -85,13 +88,29 @@ def get_transform(opt, params=None, grayscale=False, method=transforms.Interpola
         transform_list.append(transforms.Grayscale(1))
     if "resize" in opt.preprocess:
         osize = [opt.load_size, opt.load_size]
-        transform_list.append(transforms.Resize(osize, method))
+        _ao_skip = _AO_OPT_5 and params is None and opt.load_size == opt.crop_size
+
+        def _ao_resize(img, _osize=osize, _method=method, _skip=_ao_skip):
+            if _skip and img.size == (_osize[1], _osize[0]):
+                return img
+            return transforms.functional.resize(img, _osize, _method)
+
+        transform_list.append(transforms.Lambda(_ao_resize))
     elif "scale_width" in opt.preprocess:
         transform_list.append(transforms.Lambda(lambda img: __scale_width(img, opt.load_size, opt.crop_size, method)))
 
     if "crop" in opt.preprocess:
         if params is None:
-            transform_list.append(transforms.RandomCrop(opt.crop_size))
+            _ao_crop_size = opt.crop_size
+
+            def _ao_random_crop(img, _size=_ao_crop_size, _skip=_ao_skip if "resize" in opt.preprocess else False):
+                # RandomCrop at exactly the image size is the identity (its own
+                # get_params early-returns the full box); calling it still copies.
+                if _skip and img.size == (_size, _size):
+                    return img
+                return transforms.RandomCrop(_size)(img)
+
+            transform_list.append(transforms.Lambda(_ao_random_crop))
         else:
             transform_list.append(transforms.Lambda(lambda img: __crop(img, params["crop_pos"], opt.crop_size)))
 
